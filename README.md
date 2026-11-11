@@ -263,99 +263,301 @@ that already contains hooks has [additional limitations](docs/STARTUP-HOOKS.md#r
 ## Failed camera: hardware recovery
 
 This route reads and rewrites the camera's eight-pin SPI flash with an external
-programmer. The recommended setup uses the NeoProgrammer graphical
-application for every flash operation; only the recovery-image build requires
-a command line.
+programmer. You can use **Windows with NeoProgrammer** or **Linux with flashrom**.
+Windows is not required. The Linux procedure below was tested on Fedora 44 with
+a CH341 programmer and flashrom 1.6.0; the camera booted and its video feed worked
+after recovery.
 
 ### What you need
 
-- a Windows computer;
-- a CH341A/CH341B programmer verified for 3.3 V operation;
+- a camera matching the supported 8 MiB firmware and flash layout;
+- a CH341A/CH341B programmer verified for the actual flash chip's voltage and
+  SPI signal levels;
 - an SOIC-8 test clip and cable;
 - a multimeter;
-- NeoProgrammer;
-- [cc2camera installed](docs/INSTALLATION.md); the standalone Windows executable needs no Python or Git.
+- a separate drive for the original backups;
+- either Windows with NeoProgrammer, or Linux with flashrom;
+- [cc2camera installed](docs/INSTALLATION.md): the standalone executable on
+  Windows, or the Python package on Linux.
 
-The CH341 worked with the flash still soldered on the tested camera. A Bus
-Pirate is possible but was not reliable in-circuit on that setup; see the
-[programmer reference](hardware-recovery/PROGRAMMER_REFERENCE.md) if you need
-that alternative.
+ADB is not needed for external-programmer recovery or offline image building.
+The CH341 worked with the flash still soldered onto the tested cameras. A Bus
+Pirate was not reliable in-circuit on one tested setup; see the
+[programmer reference](hardware-recovery/PROGRAMMER_REFERENCE.md).
+
+### Tested Fedora setup
+
+The following setup completed a recovery on 11 November 2026:
+
+| Item | Observed value |
+|---|---|
+| Camera PCB | `EF-S7-V1.0.30B` |
+| Processor | Ingenic T23 |
+| Flash package marking | `25Q64DSIG` |
+| Measured JEDEC ID | `5E 40 17` |
+| Capacity reported through SFDP | 8 MiB / 8,388,608 bytes |
+| Programmer USB ID | `1a86:5512` |
+| Operating system | Fedora Linux 44 |
+| Flash tool | flashrom 1.6.0, `ch341a_spi`, `SFDP-capable chip` |
+| Recovery builder | cc2camera 0.9.0 |
+| Result | Full verification and independent readback passed; camera video returned |
+
+The marking had initially suggested a Zetta ZD25Q64B, but the chip actually
+returned the Zbit-family ID `5E 40 17`. The `BA 32 17` value discussed in
+[issue #28](https://github.com/OpenCentauri/cc2_camera_fix/issues/28) came from a
+datasheet, not from this chip. Do not choose a Zetta profile from the package
+marking alone.
+
+The original configuration area was 97.854% occupied, with 751 CRC-valid JFFS2
+nodes: two current and 749 obsolete. The builder accepted all three identical
+original dumps and produced an image in its default `serial-only` mode. Only
+`system_bashrc_patch` and `config` differed from the original. A further full read
+matched the original immediately before programming. Both flashrom's full-chip
+verification and a separate 8 MiB readback matched the recovery image. The owner
+confirmed that the camera worked again after reinstalling it in the printer.
+
+This is evidence for this camera, firmware and programmer combination. It does
+not establish support for chips with a different ID, different flash layouts,
+or every device that flashrom can detect through SFDP. The builder's firmware,
+layout and identity checks remain required.
 
 ### 1. Verify voltage before connecting the camera
 
 With the programmer connected to USB but no camera or clip attached, measure
-CH341A pin 28 (`VCC`) relative to ground. It should be approximately **3.3 V**.
-Also measure the programmer's flash `VCC` output if possible.
+CH341A pin 28 (`VCC`) relative to ground. It should be approximately **3.3 V**
+for the tested 3 V flash. Also check the flash supply output and SPI logic-high
+levels against the actual flash datasheet.
 
 If a measured supply or logic level is near 5 V, stop. Board color, seller
-description, purchase date, and jumper position are not proof that a
-programmer is safe for a 3 V flash chip.
+description, a lit LED and jumper position do not prove that the programmer is
+safe. Do not use a 1.8 V adapter for a chip confirmed to require a 3 V supply.
 
-### 2. Connect the flash
+### 2. Connect and identify the flash
 
 Keep the camera's normal USB/power cable disconnected. Connect the SOIC-8 clip
 before plugging the programmer into USB. Align the clip's pin-1/red-stripe
 conductor with the flash chip's pin-1 dot or notch, and use the programmer's
-25-series SPI position.
+25-series SPI position. Never connect normal camera power and programmer power
+at the same time.
 
-Confirm the complete marking on the flash itself. The verified 30B family uses
-a 64 Mbit/8 MiB `ZB25VQ64`-family 3 V SPI NOR. If the actual chip, voltage,
-capacity, or detected profile differs, stop rather than selecting a merely
-similar chip.
+Confirm the complete chip marking, its electrical requirements, measured JEDEC
+ID and capacity. The tested `25Q64DSIG` chip returned `5E 40 17` and 8 MiB. If
+identification is inconsistent or differs from this procedure, stop rather than
+selecting a merely similar chip.
+
+#### Windows: NeoProgrammer
+
+Use **Detect IC** and confirm the exact chip profile and 8 MiB capacity.
+
+#### Linux: install the tools and check detection
+
+On Fedora, install flashrom from the distribution repositories:
+
+```sh
+sudo dnf install flashrom python3
+```
+
+Create a new working directory. Keep this directory open for all Linux examples
+below. This installs the recovery-builder version used in the documented test:
+
+```sh
+mkdir cc2-camera-recovery
+cd cc2-camera-recovery
+python3 -m venv .venv
+.venv/bin/python -m pip install "cc2camera @ https://github.com/OpenCentauri/cc2_camera_fix/archive/refs/tags/v0.9.0.zip"
+.venv/bin/cc2camera --version
+flashrom --version
+```
+
+The tested v0.9.0 source commit is
+`28fae6d9a0ea5a703144ded4c4b241e52614cf01`. For other versions or distributions,
+follow the [installation guide](docs/INSTALLATION.md). Do not install Python
+packages into the system interpreter with `sudo pip`.
+
+With only one programmer connected, check its USB presence, then probe the chip
+without requesting an erase or write:
+
+```sh
+lsusb -d 1a86:5512
+flashrom -p ch341a_spi -VV 2>&1 | tee chip-detection.log
+```
+
+For the documented setup, the `Generic unknown SPI chip (RDID)` probe reported
+`id1 0x5e, id2 0x4017`, followed by:
+
+```text
+Found Unknown flash chip "SFDP-capable chip" (8192 kB, SPI)
+```
+
+flashrom 1.6.0 had no named profile for this part. It obtained the capacity and
+standard flash-operation parameters from the chip's Serial Flash Discoverable
+Parameters (SFDP) table. `-c "SFDP-capable chip"` selects that detected profile;
+it does not force an unrelated chip definition.
+
+Continue with the Linux commands below only when the expected ID, 8 MiB capacity
+and SFDP detection agree. If no chip is found, access is denied, or detection
+changes between attempts, resolve that problem first. Do not use `--force`,
+disable verification, or change protection bits to get past a refusal. Close
+other programmer applications before using flashrom.
 
 ### 3. Make three trustworthy backups
 
-In NeoProgrammer:
+Do not move the clip between reads. Save each read as a separate file.
 
-1. Select **Detect IC** and confirm the exact chip profile and 8 MiB capacity.
-2. Select **Read IC** and save the full buffer as `cc2-camera-1.bin`.
-3. Without moving the clip, read again and save `cc2-camera-2.bin`.
-4. Read a third time and save `cc2-camera-3.bin`.
+#### Windows: NeoProgrammer
 
-Each file must be exactly 8,388,608 bytes. The recovery builder compares all
-three byte-for-byte. All-`00`, all-`FF`, unstable, wrong-size, or inconsistent
-reads mean the connection is not trustworthy. Do not erase anything.
+1. Select **Read IC** and save the full buffer as `cc2-camera-1.bin`.
+2. Read again and save as `cc2-camera-2.bin`.
+3. Read a third time and save as `cc2-camera-3.bin`.
 
-Copy all three files to a separate safe location before continuing. They are
-the only verified backup of this camera's identity-bearing data.
+Use `certutil -hashfile FILE SHA256` for each file and record the hashes.
+After copying the backups to the separate drive, repeat the checks there and
+compare them with the recorded values.
+
+#### Linux: flashrom
+
+These commands only read the chip and save local files. Use the working
+directory created above, with no existing files of these names:
+
+```sh
+flashrom -p ch341a_spi -c "SFDP-capable chip" -r cc2-camera-1.bin &&
+flashrom -p ch341a_spi -c "SFDP-capable chip" -r cc2-camera-2.bin &&
+flashrom -p ch341a_spi -c "SFDP-capable chip" -r cc2-camera-3.bin
+```
+
+Check sizes and compare every byte:
+
+```sh
+wc -c cc2-camera-1.bin cc2-camera-2.bin cc2-camera-3.bin
+cmp cc2-camera-1.bin cc2-camera-2.bin && cmp cc2-camera-1.bin cc2-camera-3.bin
+sha256sum cc2-camera-1.bin cc2-camera-2.bin cc2-camera-3.bin > original-SHA256SUMS.txt
+```
+
+Each file must be exactly **8,388,608 bytes**. Both `cmp` commands must exit
+successfully without output, and all three hashes must match. All-`00`, all-`FF`,
+unstable, wrong-size or inconsistent reads mean the connection is not
+trustworthy. Do not erase anything.
+
+Copy all three original files and their checksums to a separate drive before
+continuing. On Linux, run this in the copied directory on that drive:
+
+```sh
+sha256sum -c original-SHA256SUMS.txt
+```
+
+All three entries must report `OK`. The recovery builder also compares the
+three reads and validates the firmware contents; matching reads alone are not
+proof of a supported image.
 
 ### 4. Build the recovery image
 
-Open a terminal in the folder containing your three dump files, as described
-in the [installation guide](docs/INSTALLATION.md). Run:
+Use the three original files from the same camera. On Windows, follow the
+[installation guide](docs/INSTALLATION.md) for the command prefix and run:
+
+```bat
+cc2camera.exe build-image cc2-camera-1.bin --confirm-read cc2-camera-2.bin --confirm-read cc2-camera-3.bin
+```
+
+In the Linux working directory created above:
 
 ```sh
-cc2camera build-image cc2-camera-1.bin --confirm-read cc2-camera-2.bin --confirm-read cc2-camera-3.bin
+.venv/bin/cc2camera build-image cc2-camera-1.bin --confirm-read cc2-camera-2.bin --confirm-read cc2-camera-3.bin
 ```
 
-The command performs the stability, firmware, flash-layout, identity, patch,
-and generated-image checks. It must finish without an error and create:
+This is an offline operation. It checks read stability, firmware, flash layout,
+identity, allowed changes and the generated image. It must finish without an
+error and create:
 
 ```text
-cc2-camera-1-cc2-recovery\cc2-camera-recovery.bin
+cc2-camera-1-cc2-recovery/cc2-camera-recovery.bin
 ```
 
-If it refuses the dump or reports unfamiliar data, stop. There is deliberately
-no general `--force` option.
+If it refuses the dump or reports unfamiliar data, stop. Do not bypass a
+validation failure or reduce the three-read requirement.
 
-### 5. Erase, program, and verify
+Check the generated files on Linux:
 
-In NeoProgrammer:
+```sh
+(cd cc2-camera-1-cc2-recovery && sha256sum -c SHA256SUMS.txt)
+```
+
+The full recovery image must be exactly 8,388,608 bytes. Do not use
+`config-restored.bin`, `serial.cfg`, a region file or another camera's image as
+the full-chip firmware.
+
+The generated `FLASHING.txt` may contain a Bus Pirate/`COM11` command template.
+Do not run that template unchanged with a CH341. Use the commands for your
+actual programmer below.
+
+### 5. Program and verify
+
+**This step changes the camera's flash.** Proceed only after the original
+backup has been verified on a separate drive and the recovery build has passed.
+Keep the same stable power and clip connection throughout writing and
+verification. Do not operate another programmer application at the same time.
+
+#### Windows: NeoProgrammer
 
 1. Detect the chip again and reconfirm its exact profile and 8 MiB capacity.
-2. Open the generated `cc2-camera-recovery.bin`. Confirm that the loaded file
-   is exactly 8,388,608 bytes. Do not select `config-restored.bin`,
-   `serial.cfg`, or any individual region file.
-3. Use NeoProgrammer's automatic write sequence with **Erase**,
-   **Blank Check**, **Write/Program**, and **Verify** enabled.
+2. Open the generated full `cc2-camera-recovery.bin`.
+3. Use the automatic write sequence with **Erase**, **Blank Check**,
+   **Write/Program** and **Verify** enabled.
 4. Require full-chip Verify to finish without any mismatch.
+5. Without moving the clip, read the whole chip again and save the result as
+   `cc2-camera-readback.bin` in the original working directory.
+6. Compare the complete readback with the generated recovery image:
 
-A failed erase, blank check, program, or verify is not a usable result. Keep
-the setup connected and diagnose it rather than trying to boot the camera.
+```bat
+fc.exe /b cc2-camera-1-cc2-recovery\cc2-camera-recovery.bin cc2-camera-readback.bin
+```
 
-Only after complete verification succeeds should you unplug the programmer,
-remove the clip, reconnect the camera's normal cable, and test it in the
-printer.
+#### Linux: flashrom
+
+First make a fresh full read and require it to match the preserved original.
+If it differs, stop and investigate before writing:
+
+```sh
+flashrom -p ch341a_spi -c "SFDP-capable chip" -r cc2-camera-before-write.bin &&
+cmp cc2-camera-1.bin cc2-camera-before-write.bin
+```
+
+After that comparison succeeds, write the generated full image:
+
+```sh
+flashrom -p ch341a_spi -c "SFDP-capable chip" -w cc2-camera-1-cc2-recovery/cc2-camera-recovery.bin
+```
+
+flashrom reads the current contents, erases/programs the required blocks and
+performs full-chip verification by default. Do not add `-f`, `-n`, `-N` or
+write-protection overrides. This command does not require a separate full-chip
+erase. Wait for a successful exit and completed verification.
+
+Then perform an independent full readback and byte comparison:
+
+```sh
+flashrom -p ch341a_spi -c "SFDP-capable chip" -r cc2-camera-readback.bin &&
+cmp cc2-camera-1-cc2-recovery/cc2-camera-recovery.bin cc2-camera-readback.bin
+sha256sum cc2-camera-1-cc2-recovery/cc2-camera-recovery.bin cc2-camera-readback.bin
+```
+
+`cmp` must exit successfully without output, and both hashes must match. A
+successful write command alone is not a substitute for this readback.
+
+### 6. Reconnect and test the camera
+
+If erase, program, verification or readback fails, keep the setup connected and
+diagnose the failure. Do not disconnect it to try booting the camera and do not
+repeat a failed write blindly.
+
+Only after complete verification succeeds:
+
+1. Unplug the programmer from USB.
+2. Remove the clip.
+3. With the printer switched off and unplugged from mains power, reconnect and
+   mount the camera normally.
+4. Power on the printer and check the video feed.
+
+Long-term power-cycle endurance remains untested for the documented Fedora unit.
 
 ## What the repair changes
 

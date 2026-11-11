@@ -269,7 +269,7 @@ a command line.
 
 ### What you need
 
-- a Windows computer;
+- a Windows computer for NeoProgrammer, or the [Linux setup below](#linux-with-flashrom-and-ch341);
 - a CH341A/CH341B programmer verified for 3.3 V operation;
 - an SOIC-8 test clip and cable;
 - a multimeter;
@@ -356,6 +356,27 @@ the setup connected and diagnose it rather than trying to boot the camera.
 Only after complete verification succeeds should you unplug the programmer,
 remove the clip, reconnect the camera's normal cable, and test it in the
 printer.
+
+### Linux with flashrom and CH341
+
+A supported 8 MiB camera was also recovered on Fedora 44 with flashrom 1.6.0.
+Follow the [Linux procedure](hardware-recovery/PROGRAMMER_REFERENCE.md#linux-with-flashrom-and-ch341)
+for installation, electrical and chip-ID checks, three identical backups and
+image building. The [hardware test record](hardware-recovery/TEST_RESULTS.md#fedora-44-ch341-recovery)
+contains the tested setup and result.
+
+After those checks pass and the original backups are verified on a separate
+drive, this sequence **writes the recovery image**, verifies it, then makes an
+independent readback. Keep the camera's normal power cable disconnected:
+
+```sh
+flashrom -p ch341a_spi -c "SFDP-capable chip" -w cc2-camera-1-cc2-recovery/cc2-camera-recovery.bin &&
+flashrom -p ch341a_spi -c "SFDP-capable chip" -r cc2-camera-readback.bin &&
+cmp cc2-camera-1-cc2-recovery/cc2-camera-recovery.bin cc2-camera-readback.bin
+```
+
+Stop on any error. Reconnect and test the camera only after the complete
+readback matches.
 
 ## What the repair changes
 
